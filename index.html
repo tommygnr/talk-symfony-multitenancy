@@ -58,6 +58,386 @@
                         <li>Co-organiser of PHPMelb Meetups</li>
                     </ul>
                 </section>
+
+                <section>
+                    <h2>First Steps</h2>
+                    <h3>context.client</h3>
+                    <pre><code data-trim contenteditable class="yaml">
+services:
+    rc.client_factory:
+        class: RC\RosterBundle\Factory\ClientFactory
+        arguments: [ '@security.context' ]
+
+    context.client:
+        class: RC\RosterBundle\Entity\Client
+        factory_service: rc.client_factory
+        factory_method: getClient
+...
+
+                    </code></pre>
+                </section>
+
+                <section>
+                    <h2>First Steps</h2>
+                    <h3>ClientFactory</h3>
+                    <pre><code data-trim contenteditable class="php">
+class ClientFactory
+{
+    private $context;
+    private $client;
+
+    public function __construct(SecurityContextInterface $context)
+    {
+        $this->context = $context;
+    }
+
+    public function getClient()
+    {
+        $client = $this->client;
+        $user = $this->getUser();
+
+        if (!$client && $user) {
+            $client = $user->getClient();
+            $this->client = $client;
+        }
+
+        return $client;
+    }
+
+    private function getUser()
+    {
+        if (null === $token = $this->context->getToken()) {
+            return null;
+        }
+
+        if (!is_object($user = $token->getUser())) {
+            return null;
+        }
+
+        return $user;
+    }
+
+    public function setClient(Client $client = null)
+    {
+        $this->client = $client
+    }
+...
+
+                    </code></pre>
+                </section>
+
+                <section>
+                    <h3>Our Controllers looked like this</h3>
+                    <pre><code data-trim contenteditable class="php">
+class RoleController extends Controller
+{
+    public function editAction($id)
+    {
+        $em = $this->getDoctrine()->getManager();
+
+        $role = $em->getRepository('RCRosterBundle:Role')->find($id);
+
+        if (!$role) {
+            throw $this->createNotFoundException('Unable to find Role entity.');
+        }
+
+        //...
+...
+
+                    </code></pre>
+                    Which was great. We didn't have to worry about the client.context
+                </section>
+
+                <section>
+                    <h3>Our forms were very straightforward too</h3>
+                    <pre><code data-trim contenteditable class="php">
+class UserType extends AbstractType
+{
+    public function buildForm(FormBuilderInterface $builder, array $options)
+    {
+        $builder->add('role', 'entity', [
+            'class' => 'RCRosterBundle:Role',
+        ]);
+        //...
+    }
+}
+
+                    </code></pre>
+                </section>
+                Just the way Symfony's app/console doctrine:generate:crud command created them.
+
+                <section>
+                    <h2>First Steps</h2>
+                    <h3>JMSDiExtraBundle</h3>
+                    <pre><code data-trim contenteditable class="php">
+class ClientAwareEntityRepository extends EntityRepository {
+
+/** @var \RC\RosterBundle\Entity\Client */
+private $client
+
+/**
+ * @DI\InjectParams({
+ *     "client" = @DI\Inject("context.client"),
+ * })
+ */
+public function setClient(Client $client)
+{
+    $this->client = $client;
+}
+
+public function find($id, $lockMode = LockMode::NONE, $lockVersion = null)
+{
+    return $this->findOneBy([
+        'id' => ['=', $id],
+        'client' => ['=', $this->client],
+    ]);
+}
+
+public function findAll()
+{
+    return $this->findBy([
+        'client' => ['=', $this->client],
+    ]);
+}
+...
+
+                    </code></pre>
+                </section>
+
+                <section>
+	                <h2>Magical Repository Injection</h2>
+					<h3>The Good</h3>
+	                <div class="fragment">
+
+						<ul>
+							<li>Saved writing LOTS of boilerplate</li>
+							<li>Would cover us if we forgot to pass a client parameter somewhere</li>
+							<li>Kept configuration of symfony forms simple</li>
+							<li>Allowed us to leverage code generators for controllers easily</li>
+						</ul>
+					</div>
+				</section>
+
+                <section>
+                	<h2>Magical Repository Injection</h2>
+                	<h3>The Bad</h3>
+					<div class="fragment">
+
+						<ul>
+							<li>This is rather magical</li>
+							<li>Couldn't be used on the UserRepository as it breaks logging in</li>
+							<li>Ended up injecting context.client in to every service anyway</li>
+							<li>Still had plenty of boilerplate
+								<ul>
+									<li>throw http not found exception in controllers</li>
+								</ul>
+							</li>
+							<li>Eventually it started to feel really wrong!</li>
+						</ul>
+					</div>
+				</section>
+
+				<section>
+	                <h2>context.client</h2>
+					<h3>The Good</h3>
+	                <div class="fragment">
+
+						<ul>
+							<li>Extremely convenient</li>
+							<li>Causes no issues in a request scope</li>
+						</ul>
+					</div>
+				</section>
+
+				<section>
+	                <h2>context.client</h2>
+					<h3>The Bad</h3>
+	                <div class="fragment">
+						<ul>
+							<li>Symfony provides a single instance of a service by default. This is fine in your controllers where you only have one possible client context (the logged in user's). However, when running console commands (eg sending emails) we need to change the context often.</li>
+							<li>All our services had to be modified to have a setClient method.</li>
+						</ul>
+					</div>
+				</section>
+
+				<section>
+	                <h2>context.client</h2>
+					<h3>The Solution</h3>
+	                <div class="fragment">
+						<ul>
+							<li>Don't inject context.client but rather the ClientFactory in to your services
+								<ul>
+									<li>It's still okay in controllers because they are by definition confined to the request scope</li>
+								</ul>
+							</li>
+
+							<li>When you need the current Client in a service do $this->clientFactory->getClient() instead of $this->client</li>
+							<li>Scope problem is solved.(This is similar to how the RequestStack service in Symfony solved the problem with Request being in the service container</li>
+						</ul>
+					</div>
+				</section>
+
+
+
+				<section>
+                    <h3>Problem: We have to inject the client in to every form</h3>
+                    <pre><code data-trim contenteditable class="php">
+class FooType extends AbstractType
+{
+    protected $clientFactory;
+
+    public function __construct(ClientFactory $clientFactory)
+    {
+        $this->clientFactory = $clientFactory;
+    }
+
+    public function buildForm(FormBuilderInterface $builder, array $options)
+    {
+        $client = $this->clientFactory->getClient();
+
+        $builder->add('user', 'entity', [
+            'class' => 'CRSCertusBundle:User',
+            'query_builder' => function(EntityRepository $er) use ($client) {
+                return $er->createQueryBuilder('u')
+                    ->where('u.client = :client')
+                    ->setParameter('client', $client)
+                ;
+            }
+        ]);
+    }
+...
+
+                    </code></pre>
+                </section>
+
+                <section>
+                    <h2></h2>
+                    <h3>Solution: Create our own form type</h3>
+                    <pre><code data-trim contenteditable class="php">
+namespace CRS\CertusBundle\Form\Type;
+
+use CRS\CertusBundle\Factory\ClientFactory;
+use Doctrine\ORM\EntityRepository;
+use Symfony\Component\Form\AbstractType;
+use Symfony\Component\OptionsResolver\Options;
+use Symfony\Component\OptionsResolver\OptionsResolverInterface;
+
+class ClientAwareEntityType extends AbstractType
+{
+    /**
+     * @var ClientFactory
+     */
+    protected $clientFactory;
+
+    /**
+     * @param ClientFactory $clientFactory
+     */
+    public function __construct(ClientFactory $clientFactory)
+    {
+        $this->clientFactory = $clientFactory;
+    }
+
+    public function setDefaultOptions(OptionsResolverInterface $resolver)
+    {
+        $resolver->setDefaults(array(
+            'query_builder' => function(Options $options) {
+                return function(EntityRepository $er) {
+                    return $er->createQueryBuilder('t')
+                        ->andWhere('t.client = :client')
+                        ->setParameter('client', $this->clientFactory->getClient())
+                    ;
+                };
+            },
+        ));
+    }
+...
+
+                    </code></pre>
+                </section>
+
+                <section>
+                    <h3>Now our form looks like this</h3>
+                    <pre><code data-trim contenteditable class="php">
+class FooType extends AbstractType
+{
+    public function buildForm(FormBuilderInterface $builder, array $options)
+    {
+        $builder->add('user', 'clientaware_entity', [
+            'class' => 'CRSCertusBundle:User',
+        ]);
+    }
+...
+
+                    </code></pre>
+                    We've saved a constructor, annoying boilerplate for the entity (sometimes up to 10 of these in 1 form) and a service definition to inject the ClientFactory
+
+                </section>
+
+				<section>
+                	<h2>ParamConverters</h2>
+                	<h3>The Holy Grail</h3>
+					<div class="fragment">
+						Saved us thousands of lines of code.
+						Switching off ClientAware behaviour was easy.
+						<ul>
+							<li>This is rather magical</li>
+							<li>Couldn't be used on the UserRepository as it breaks logging in</li>
+							<li>Ended up injecting context.client in to every service anyway</li>
+							<li>Still had plenty of boilerplate
+								<ul>
+									<li>throw http not found exception in controllers</li>
+								</ul>
+							</li>
+							<li>Eventually it started to feel really wrong!</li>
+						</ul>
+					</div>
+				</section>
+
+				<section>
+                    <h3>Our controller looks like this</h3>
+                    <pre><code data-trim contenteditable class="php">
+class RoleController extends Controller
+{
+/**
+ * @ParamConverter("role", class="RCRosterBundle:Role")
+ */
+public function editAction(Role $role)
+{
+    /* Saves us all of this crap:
+    $em = $this->getDoctrine()->getManager();
+
+    $role = $em->getRepository('RCRosterBundle:Role')->find($id);
+
+    if (!$role) {
+        throw $this->createNotFoundException('Unable to find Role entity.');
+    }
+    */
+
+    //...
+}
+
+                    </code></pre>
+                </section>
+
+				<section>
+					<h2>Other Approaches I haven't tried</h2>
+					<ul>
+						<li>Doctrine Filters</li>
+						<li>Couldn't be used on the UserRepository as it breaks logging in</li>
+						<li>Ended up injecting context.client in to every service anyway</li>
+						<li>Still had plenty of boilerplate
+							<ul>
+								<li>throw http not found exception in controllers</li>
+							</ul>
+						</li>
+					</ul>
+				</section>
+
+
+				<section>
+					<h1>Thanks</h1>
+				</section>
+
             </div>
 
         </div>
